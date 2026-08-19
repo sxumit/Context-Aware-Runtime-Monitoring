@@ -1,0 +1,27 @@
+
+Minimum workload execution time: 25.336 ms
+Maximum workload execution time: 25.431 ms
+Average workload execution time: 25.340 ms
+Workload timing standard deviation: 0.003 ms
+
+
+Minimum monitored execution time: 25.344 ms
+Maximum monitored execution time: 25.440 ms
+Average monitored execution time: 25.347 ms 
+Monitored timing standard deviation: 0.003 ms 
+
+
+Average monitoring overhead: 0.007 ms
+Monitoring overhead percentage: 0.028 %
+Detected deadline anomalies: 0
+Deadline misses: 0
+
+
+Monitored task CPU utilization: 25.34 %
+Runtime monitor CPU utilization: 0.004 %
+Monitor events processed: 2000
+Free heap: 305356 bytes
+Minimum free heap: 283300 bytes
+Monitored task stack high-water mark: 3388 words
+
+
