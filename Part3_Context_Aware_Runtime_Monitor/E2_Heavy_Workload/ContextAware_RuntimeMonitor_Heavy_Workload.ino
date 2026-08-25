@@ -1,20 +1,18 @@
+
 #include <Arduino.h>
 #include <math.h>
 #include "esp_timer.h"
 
 // =====================================================
-// PROJECT 1 - PART 3
-// UNIVERSAL CONTEXT-AWARE ADAPTIVE RUNTIME MONITOR
-//
-// P3-E2: HEAVY WORKLOAD
+// PROJECT 1 - PART 2
+// EXPERIMENT 2 - HEAVY WORKLOAD
+// ADAPTIVE RUNTIME MONITOR
 // =====================================================
 
 #define LED_PIN 4
 
 #define NUM_SAMPLES 1000
-
-// P3-E2 HEAVY WORKLOAD
-#define WORKLOAD_ITERATIONS 10000
+#define HEAVY_ITERATIONS 10000
 
 #define PERIOD_MS 100
 #define DEADLINE_MS 50
@@ -26,45 +24,55 @@
 
 
 // =====================================================
-// ADAPTATION THRESHOLDS
+// ADAPTIVE MONITOR CONFIGURATION
 // =====================================================
 
-#define FULL_LIMIT_MS       40.0
-#define BALANCED_LIMIT_MS   45.0
-#define LIGHT_LIMIT_MS      50.0
+// Mode decision is evaluated only once every
+// 10 completed samples.
+#define ADAPTATION_INTERVAL 10
 
-#define PRESSURE_COUNT_LIMIT 3
-#define RECOVERY_COUNT_LIMIT 5
-
-
-// =====================================================
-// CRITICAL MODE DETAILED CHECK INTERVAL
-// =====================================================
-
-// Every 10th sample in CRITICAL mode
-// receives detailed monitoring.
-
-#define CRITICAL_DETAILED_INTERVAL 10
+// Three consecutive decisions are required before
+// changing the monitoring mode.
+#define HYSTERESIS_CYCLES 3
 
 
 // =====================================================
-// MONITORING MODES
+// EXECUTION-TIME THRESHOLDS
+// =====================================================
+//
+// These are intentionally simple integer comparisons.
+//
+// < 25 ms       -> FULL
+// 25-40 ms      -> BALANCED
+// 40-50 ms      -> LIGHT
+// > 50 ms       -> CRITICAL
+//
+// These thresholds will be evaluated experimentally.
+// =====================================================
+
+#define FULL_LIMIT_US      25000ULL
+#define BALANCED_LIMIT_US  40000ULL
+#define LIGHT_LIMIT_US     50000ULL
+
+
+// =====================================================
+// MONITOR MODES
 // =====================================================
 
 enum MonitorMode {
 
-  FULL_MODE,
+  MODE_FULL,
 
-  BALANCED_MODE,
+  MODE_BALANCED,
 
-  LIGHT_MODE,
+  MODE_LIGHT,
 
-  CRITICAL_MODE
+  MODE_CRITICAL
 };
 
 
 // =====================================================
-// EVENT STRUCTURE
+// MONITOR EVENT
 // =====================================================
 
 struct MonitorEvent {
@@ -78,7 +86,7 @@ struct MonitorEvent {
 
 
 // =====================================================
-// RAW SAMPLE DATA
+// SAMPLE RECORD
 // =====================================================
 
 struct SampleRecord {
@@ -87,49 +95,68 @@ struct SampleRecord {
 
   unsigned long monitoredTimeUs;
 
-  unsigned long overheadUs;
+  unsigned long monitoringOverheadUs;
 
   bool deadlineMiss;
 
   MonitorMode mode;
-
-  bool varianceCalculated;
-
-  bool trendCalculated;
-
-  bool criticalDetailedCheck;
 };
 
 
-// =====================================================
-// GLOBAL OBJECTS
-// =====================================================
-
 SampleRecord records[NUM_SAMPLES];
+
+
+// =====================================================
+// QUEUE
+// =====================================================
 
 QueueHandle_t monitorQueue;
 
 
 // =====================================================
-// ADAPTIVE STATE
+// STATISTICS
 // =====================================================
 
-MonitorMode currentMode = FULL_MODE;
+unsigned long deadlineMisses = 0;
 
-int pressureCounter = 0;
+unsigned long anomaliesDetected = 0;
 
-int recoveryCounter = 0;
+
+unsigned long minWorkloadTime = ULONG_MAX;
+
+unsigned long maxWorkloadTime = 0;
+
+
+unsigned long minMonitoredTime = ULONG_MAX;
+
+unsigned long maxMonitoredTime = 0;
+
+
+double sumWorkloadTime = 0;
+
+double sumWorkloadTimeSquared = 0;
+
+
+double sumMonitoredTime = 0;
+
+double sumMonitoredTimeSquared = 0;
+
+
+double sumMonitoringOverhead = 0;
 
 
 // =====================================================
-// EXPERIMENT STATISTICS
+// MONITOR CPU STATISTICS
 // =====================================================
+
+unsigned long long monitorBusyTimeUs = 0;
 
 unsigned long monitorEventsProcessed = 0;
 
-unsigned long deadlineAnomalies = 0;
 
-unsigned long modeChanges = 0;
+// =====================================================
+// ADAPTIVE STATISTICS
+// =====================================================
 
 unsigned long fullSamples = 0;
 
@@ -139,255 +166,229 @@ unsigned long lightSamples = 0;
 
 unsigned long criticalSamples = 0;
 
-unsigned long criticalDetailedSamples = 0;
+unsigned long modeChanges = 0;
 
 
 // =====================================================
-// EXECUTION TIME STATISTICS
+// MONITOR STATE
 // =====================================================
 
-unsigned long minExecutionTime = ULONG_MAX;
+uint64_t startTimestamp = 0;
 
-unsigned long maxExecutionTime = 0;
+uint16_t currentSample = 0;
 
-double executionSum = 0.0;
-
-double executionSumSquared = 0.0;
+bool taskRunning = false;
 
 
 // =====================================================
-// MONITORED EXECUTION STATISTICS
+// ADAPTIVE STATE
 // =====================================================
 
-double monitoredSum = 0.0;
+MonitorMode currentMode = MODE_FULL;
 
-double monitoredSumSquared = 0.0;
+uint8_t increaseCounter = 0;
 
-double overheadSum = 0.0;
-
-
-// =====================================================
-// MONITOR CPU MEASUREMENT
-// =====================================================
-
-unsigned long long monitorBusyTimeUs = 0;
-
-
-// =====================================================
-// DETAILED MONITORING STATISTICS
-// =====================================================
-
-double runningMean = 0.0;
-
-double runningM2 = 0.0;
-
-double previousExecutionMs = 0.0;
-
-unsigned long detailedCalculations = 0;
+uint8_t decreaseCounter = 0;
 
 
 // =====================================================
 // MODE NAME
 // =====================================================
 
-const char* modeName(MonitorMode mode) {
+const char* modeName(
+  MonitorMode mode
+) {
 
   switch (mode) {
 
-    case FULL_MODE:
+    case MODE_FULL:
       return "FULL";
 
-    case BALANCED_MODE:
+    case MODE_BALANCED:
       return "BALANCED";
 
-    case LIGHT_MODE:
+    case MODE_LIGHT:
       return "LIGHT";
 
-    case CRITICAL_MODE:
+    case MODE_CRITICAL:
       return "CRITICAL";
-  }
 
-  return "UNKNOWN";
+    default:
+      return "UNKNOWN";
+  }
 }
 
 
 // =====================================================
-// ADAPTIVE MODE UPDATE
+// DETERMINE TARGET MODE
+// =====================================================
+//
+// This function is deliberately tiny.
+//
+// It performs only integer comparisons.
+// It is NOT executed for every sample.
 // =====================================================
 
-void updateAdaptiveMode(double executionMs) {
-
-  MonitorMode previousMode = currentMode;
-
-
-  // ===================================================
-  // SEVERE PRESSURE
-  // ===================================================
-
-  if (executionMs > LIGHT_LIMIT_MS) {
-
-    pressureCounter++;
-
-    recoveryCounter = 0;
-
-    if (
-      pressureCounter >=
-      PRESSURE_COUNT_LIMIT
-    ) {
-
-      pressureCounter = 0;
-
-      if (
-        currentMode <
-        CRITICAL_MODE
-      ) {
-
-        currentMode =
-          (MonitorMode)(
-            currentMode + 1
-          );
-      }
-    }
-  }
-
-
-  // ===================================================
-  // HIGH PRESSURE
-  // ===================================================
-
-  else if (
-    executionMs >=
-    BALANCED_LIMIT_MS
-  ) {
-
-    pressureCounter++;
-
-    recoveryCounter = 0;
-
-    if (
-      pressureCounter >=
-      PRESSURE_COUNT_LIMIT
-    ) {
-
-      pressureCounter = 0;
-
-      if (
-        currentMode ==
-        FULL_MODE
-      ) {
-
-        currentMode =
-          BALANCED_MODE;
-      }
-
-      else if (
-        currentMode ==
-        BALANCED_MODE
-      ) {
-
-        currentMode =
-          LIGHT_MODE;
-      }
-    }
-  }
-
-
-  // ===================================================
-  // MODERATE PRESSURE
-  // ===================================================
-
-  else if (
-    executionMs >=
-    FULL_LIMIT_MS
-  ) {
-
-    pressureCounter++;
-
-    recoveryCounter = 0;
-
-    if (
-      pressureCounter >=
-      PRESSURE_COUNT_LIMIT
-    ) {
-
-      pressureCounter = 0;
-
-      if (
-        currentMode ==
-        FULL_MODE
-      ) {
-
-        currentMode =
-          BALANCED_MODE;
-      }
-    }
-  }
-
-
-  // ===================================================
-  // HEALTHY / RECOVERY
-  // ===================================================
-
-  else {
-
-    pressureCounter = 0;
-
-    recoveryCounter++;
-
-    if (
-      recoveryCounter >=
-      RECOVERY_COUNT_LIMIT
-    ) {
-
-      recoveryCounter = 0;
-
-      if (
-        currentMode ==
-        CRITICAL_MODE
-      ) {
-
-        currentMode =
-          LIGHT_MODE;
-      }
-
-      else if (
-        currentMode ==
-        LIGHT_MODE
-      ) {
-
-        currentMode =
-          BALANCED_MODE;
-      }
-
-      else if (
-        currentMode ==
-        BALANCED_MODE
-      ) {
-
-        currentMode =
-          FULL_MODE;
-      }
-    }
-  }
-
-
-  // ===================================================
-  // MODE CHANGE REPORT
-  // ===================================================
+MonitorMode determineTargetMode(
+  uint64_t executionTimeUs
+) {
 
   if (
-    previousMode !=
+    executionTimeUs <
+    FULL_LIMIT_US
+  ) {
+
+    return MODE_FULL;
+  }
+
+
+  if (
+    executionTimeUs <
+    BALANCED_LIMIT_US
+  ) {
+
+    return MODE_BALANCED;
+  }
+
+
+  if (
+    executionTimeUs <=
+    LIGHT_LIMIT_US
+  ) {
+
+    return MODE_LIGHT;
+  }
+
+
+  return MODE_CRITICAL;
+}
+
+
+// =====================================================
+// ADAPTIVE MODE CONTROLLER
+// =====================================================
+//
+// Called only once every 10 samples.
+//
+// Three consecutive decisions are required before
+// changing mode.
+// =====================================================
+
+void updateAdaptiveMode(
+  uint64_t executionTimeUs
+) {
+
+  MonitorMode targetMode =
+    determineTargetMode(
+      executionTimeUs
+    );
+
+
+  // ---------------------------------------------------
+  // No mode change required
+  // ---------------------------------------------------
+
+  if (
+    targetMode ==
     currentMode
   ) {
 
+    increaseCounter = 0;
+
+    decreaseCounter = 0;
+
+    return;
+  }
+
+
+  // ---------------------------------------------------
+  // Need MORE monitoring
+  // ---------------------------------------------------
+
+  if (
+    targetMode <
+    currentMode
+  ) {
+
+    increaseCounter++;
+
+    decreaseCounter = 0;
+
+
+    if (
+      increaseCounter >=
+      HYSTERESIS_CYCLES
+    ) {
+
+      MonitorMode oldMode =
+        currentMode;
+
+
+      currentMode =
+        targetMode;
+
+
+      increaseCounter = 0;
+
+
+      modeChanges++;
+
+
+      Serial.print(
+        "ADAPTIVE MODE CHANGE: "
+      );
+
+      Serial.print(
+        modeName(oldMode)
+      );
+
+      Serial.print(
+        " -> "
+      );
+
+      Serial.println(
+        modeName(currentMode)
+      );
+    }
+
+    return;
+  }
+
+
+  // ---------------------------------------------------
+  // Can use LESS monitoring
+  // ---------------------------------------------------
+
+  decreaseCounter++;
+
+  increaseCounter = 0;
+
+
+  if (
+    decreaseCounter >=
+    HYSTERESIS_CYCLES
+  ) {
+
+    MonitorMode oldMode =
+      currentMode;
+
+
+    currentMode =
+      targetMode;
+
+
+    decreaseCounter = 0;
+
+
     modeChanges++;
+
 
     Serial.print(
       "ADAPTIVE MODE CHANGE: "
     );
 
     Serial.print(
-      modeName(previousMode)
+      modeName(oldMode)
     );
 
     Serial.print(
@@ -402,17 +403,15 @@ void updateAdaptiveMode(double executionMs) {
 
 
 // =====================================================
-// RUNTIME MONITOR TASK
+// RUNTIME MONITOR
 // CORE 1
 // =====================================================
 
-void runtimeMonitorTask(void *parameter) {
+void runtimeMonitorTask(
+  void *parameter
+) {
 
   MonitorEvent event;
-
-  uint64_t startTimestamp = 0;
-
-  uint16_t sampleNumber = 0;
 
 
   while (true) {
@@ -422,396 +421,14 @@ void runtimeMonitorTask(void *parameter) {
         monitorQueue,
         &event,
         portMAX_DELAY
-      ) == pdTRUE
+      ) != pdTRUE
     ) {
 
-      unsigned long long monitorStart =
-        esp_timer_get_time();
-
-
-      // =================================================
-      // START EVENT
-      // =================================================
-
-      if (
-        event.eventType ==
-        TASK_START_EVENT
-      ) {
-
-        startTimestamp =
-          event.timestampUs;
-
-        sampleNumber =
-          event.sampleNumber;
-      }
-
-
-      // =================================================
-      // FINISH EVENT
-      // =================================================
-
-      else if (
-        event.eventType ==
-        TASK_FINISH_EVENT
-      ) {
-
-        uint64_t executionUs =
-          event.timestampUs -
-          startTimestamp;
-
-
-        double executionMs =
-          executionUs /
-          1000.0;
-
-
-        // ===============================================
-        // STORE BASIC RAW DATA
-        // ===============================================
-
-        records[sampleNumber]
-          .workloadTimeUs =
-          executionUs;
-
-        records[sampleNumber]
-          .mode =
-          currentMode;
-
-        records[sampleNumber]
-          .criticalDetailedCheck =
-          false;
-
-
-        // ===============================================
-        // SWITCH STATEMENT
-        // ===============================================
-
-        switch (currentMode) {
-
-          case FULL_MODE:
-
-            fullSamples++;
-
-            break;
-
-
-          case BALANCED_MODE:
-
-            balancedSamples++;
-
-            break;
-
-
-          case LIGHT_MODE:
-
-            lightSamples++;
-
-            break;
-
-
-          case CRITICAL_MODE:
-
-            criticalSamples++;
-
-            break;
-        }
-
-
-        // ===============================================
-        // DEADLINE CHECK
-        // ===============================================
-
-        bool deadlineMiss =
-          executionMs >
-          DEADLINE_MS;
-
-
-        records[sampleNumber]
-          .deadlineMiss =
-          deadlineMiss;
-
-
-        if (deadlineMiss) {
-
-          deadlineAnomalies++;
-        }
-
-
-        // ===============================================
-        // FULL MODE
-        // ===============================================
-
-        if (
-          currentMode ==
-          FULL_MODE
-        ) {
-
-          records[sampleNumber]
-            .varianceCalculated =
-            true;
-
-          records[sampleNumber]
-            .trendCalculated =
-            true;
-
-
-          detailedCalculations++;
-
-
-          // Running variance
-
-          double delta =
-            executionMs -
-            runningMean;
-
-
-          runningMean +=
-            delta /
-            (sampleNumber + 1);
-
-
-          double delta2 =
-            executionMs -
-            runningMean;
-
-
-          runningM2 +=
-            delta *
-            delta2;
-
-
-          // Trend calculation
-
-          double trend =
-            executionMs -
-            previousExecutionMs;
-
-          (void)trend;
-
-
-          previousExecutionMs =
-            executionMs;
-        }
-
-
-        // ===============================================
-        // BALANCED MODE
-        // ===============================================
-
-        else if (
-          currentMode ==
-          BALANCED_MODE
-        ) {
-
-          records[sampleNumber]
-            .varianceCalculated =
-            true;
-
-          records[sampleNumber]
-            .trendCalculated =
-            false;
-
-
-          detailedCalculations++;
-
-
-          double delta =
-            executionMs -
-            runningMean;
-
-
-          runningMean +=
-            delta /
-            (sampleNumber + 1);
-
-
-          runningM2 +=
-            delta *
-            (
-              executionMs -
-              runningMean
-            );
-        }
-
-
-        // ===============================================
-        // LIGHT MODE
-        // ===============================================
-
-        else if (
-          currentMode ==
-          LIGHT_MODE
-        ) {
-
-          records[sampleNumber]
-            .varianceCalculated =
-            false;
-
-          records[sampleNumber]
-            .trendCalculated =
-            false;
-
-          // Essential monitoring only:
-          //
-          // execution time
-          // deadline detection
-        }
-
-
-        // ===============================================
-        // CRITICAL MODE
-        // ===============================================
-
-        else {
-
-          records[sampleNumber]
-            .varianceCalculated =
-            false;
-
-          records[sampleNumber]
-            .trendCalculated =
-            false;
-
-
-          // ---------------------------------------------
-          // PERIODIC DETAILED MONITORING
-          // ---------------------------------------------
-
-          if (
-            (
-              (sampleNumber + 1) %
-              CRITICAL_DETAILED_INTERVAL
-            ) == 0
-          ) {
-
-            records[sampleNumber]
-              .criticalDetailedCheck =
-              true;
-
-
-            criticalDetailedSamples++;
-
-            detailedCalculations++;
-
-
-            // Running variance
-
-            double delta =
-              executionMs -
-              runningMean;
-
-
-            runningMean +=
-              delta /
-              (sampleNumber + 1);
-
-
-            runningM2 +=
-              delta *
-              (
-                executionMs -
-                runningMean
-              );
-
-
-            // Trend calculation
-
-            double trend =
-              executionMs -
-              previousExecutionMs;
-
-            (void)trend;
-
-
-            previousExecutionMs =
-              executionMs;
-          }
-        }
-
-
-        // ===============================================
-        // GLOBAL STATISTICS
-        // ===============================================
-
-        executionSum +=
-          executionMs;
-
-
-        executionSumSquared +=
-          executionMs *
-          executionMs;
-
-
-        if (
-          executionUs <
-          minExecutionTime
-        ) {
-
-          minExecutionTime =
-            executionUs;
-        }
-
-
-        if (
-          executionUs >
-          maxExecutionTime
-        ) {
-
-          maxExecutionTime =
-            executionUs;
-        }
-
-
-        // ===============================================
-        // ADAPTIVE DECISION
-        // ===============================================
-
-        updateAdaptiveMode(
-          executionMs
-        );
-      }
-
-
-      unsigned long long monitorFinish =
-        esp_timer_get_time();
-
-
-      monitorBusyTimeUs +=
-        monitorFinish -
-        monitorStart;
-
-
-      monitorEventsProcessed++;
+      continue;
     }
-  }
-}
 
 
-// =====================================================
-// MONITORED WORKLOAD TASK
-// CORE 0
-// =====================================================
-
-void monitoredTask(void *parameter) {
-
-  TickType_t lastWakeTime =
-    xTaskGetTickCount();
-
-
-  delay(1000);
-
-
-  // ===================================================
-  // EXPERIMENT
-  // ===================================================
-
-  for (
-    int sample = 0;
-    sample < NUM_SAMPLES;
-    sample++
-  ) {
-
-    unsigned long long totalStart =
+    unsigned long long monitorStart =
       esp_timer_get_time();
 
 
@@ -819,13 +436,263 @@ void monitoredTask(void *parameter) {
     // START EVENT
     // =================================================
 
+    if (
+      event.eventType ==
+      TASK_START_EVENT
+    ) {
+
+      startTimestamp =
+        event.timestampUs;
+
+
+      currentSample =
+        event.sampleNumber;
+
+
+      taskRunning =
+        true;
+    }
+
+
+    // =================================================
+    // FINISH EVENT
+    // =================================================
+
+    else if (
+      event.eventType ==
+      TASK_FINISH_EVENT
+    ) {
+
+      if (
+        !taskRunning
+      ) {
+
+        continue;
+      }
+
+
+      // ------------------------------------------------
+      // Calculate workload execution time
+      // ------------------------------------------------
+
+      uint64_t workloadTimeUs =
+        event.timestampUs -
+        startTimestamp;
+
+
+      taskRunning =
+        false;
+
+
+      // ------------------------------------------------
+      // Store raw workload timing
+      // ------------------------------------------------
+
+      records[currentSample]
+        .workloadTimeUs =
+        workloadTimeUs;
+
+
+      // =================================================
+      // DEADLINE CHECK
+      // =================================================
+
+      bool deadlineMiss =
+        workloadTimeUs >
+        (DEADLINE_MS * 1000ULL);
+
+
+      records[currentSample]
+        .deadlineMiss =
+        deadlineMiss;
+
+
+      if (
+        deadlineMiss
+      ) {
+
+        deadlineMisses++;
+
+        anomaliesDetected++;
+      }
+
+
+      // =================================================
+      // ADAPTIVE DECISION
+      // =================================================
+      //
+      // IMPORTANT:
+      //
+      // This is NOT performed on every sample.
+      //
+      // Only every 10th sample.
+      // =================================================
+
+      if (
+        (
+          (currentSample + 1) %
+          ADAPTATION_INTERVAL
+        ) == 0
+      ) {
+
+        updateAdaptiveMode(
+          workloadTimeUs
+        );
+      }
+
+
+      // =================================================
+      // SAVE CURRENT MODE
+      // =================================================
+
+      records[currentSample]
+        .mode =
+        currentMode;
+
+
+      // =================================================
+      // MODE COUNTERS
+      // =================================================
+
+      switch (
+        currentMode
+      ) {
+
+        case MODE_FULL:
+
+          fullSamples++;
+
+          break;
+
+
+        case MODE_BALANCED:
+
+          balancedSamples++;
+
+          break;
+
+
+        case MODE_LIGHT:
+
+          lightSamples++;
+
+          break;
+
+
+        case MODE_CRITICAL:
+
+          criticalSamples++;
+
+          break;
+      }
+
+
+      // =================================================
+      // WORKLOAD STATISTICS
+      // =================================================
+
+      if (
+        workloadTimeUs <
+        minWorkloadTime
+      ) {
+
+        minWorkloadTime =
+          workloadTimeUs;
+      }
+
+
+      if (
+        workloadTimeUs >
+        maxWorkloadTime
+      ) {
+
+        maxWorkloadTime =
+          workloadTimeUs;
+      }
+
+
+      sumWorkloadTime +=
+        workloadTimeUs;
+
+
+      sumWorkloadTimeSquared +=
+        (double)workloadTimeUs *
+        workloadTimeUs;
+    }
+
+
+    // =================================================
+    // MONITOR CPU TIME
+    // =================================================
+
+    unsigned long long monitorFinish =
+      esp_timer_get_time();
+
+
+    monitorBusyTimeUs +=
+      monitorFinish -
+      monitorStart;
+
+
+    monitorEventsProcessed++;
+  }
+}
+
+
+// =====================================================
+// HEAVY MONITORED TASK
+// CORE 0
+// =====================================================
+
+void monitoredTask(
+  void *parameter
+) {
+
+  TickType_t lastWakeTime =
+    xTaskGetTickCount();
+
+
+  // =================================================
+  // WARM-UP
+  // =================================================
+
+  vTaskDelay(
+    pdMS_TO_TICKS(1000)
+  );
+
+
+  // =================================================
+  // EXPERIMENT
+  // =================================================
+
+  for (
+    int sample = 0;
+    sample < NUM_SAMPLES;
+    sample++
+  ) {
+
+    // -----------------------------------------------
+    // TOTAL MONITORED INTERVAL START
+    // -----------------------------------------------
+
+    unsigned long long totalStart =
+      esp_timer_get_time();
+
+
+    // -----------------------------------------------
+    // START EVENT
+    // -----------------------------------------------
+
     MonitorEvent startEvent;
+
 
     startEvent.eventType =
       TASK_START_EVENT;
 
+
     startEvent.sampleNumber =
       sample;
+
 
     startEvent.timestampUs =
       esp_timer_get_time();
@@ -839,7 +706,7 @@ void monitoredTask(void *parameter) {
 
 
     // =================================================
-    // WORKLOAD
+    // HEAVY WORKLOAD
     // =================================================
 
     digitalWrite(
@@ -848,12 +715,13 @@ void monitoredTask(void *parameter) {
     );
 
 
-    float x = 0.5;
+    float x =
+      0.5;
 
 
     for (
       int i = 0;
-      i < WORKLOAD_ITERATIONS;
+      i < HEAVY_ITERATIONS;
       i++
     ) {
 
@@ -864,36 +732,26 @@ void monitoredTask(void *parameter) {
     }
 
 
-    // Prevent compiler optimization
-
-    if (
-      x ==
-      -9999.0
-    ) {
-
-      Serial.println(
-        "Impossible"
-      );
-    }
-
-
     digitalWrite(
       LED_PIN,
       LOW
     );
 
 
-    // =================================================
+    // -----------------------------------------------
     // FINISH EVENT
-    // =================================================
+    // -----------------------------------------------
 
     MonitorEvent finishEvent;
+
 
     finishEvent.eventType =
       TASK_FINISH_EVENT;
 
+
     finishEvent.sampleNumber =
       sample;
+
 
     finishEvent.timestampUs =
       esp_timer_get_time();
@@ -906,9 +764,9 @@ void monitoredTask(void *parameter) {
     );
 
 
-    // =================================================
-    // TOTAL MONITORED EXECUTION
-    // =================================================
+    // -----------------------------------------------
+    // TOTAL MONITORED INTERVAL END
+    // -----------------------------------------------
 
     unsigned long long totalFinish =
       esp_timer_get_time();
@@ -920,9 +778,9 @@ void monitoredTask(void *parameter) {
       totalStart;
 
 
-    // =================================================
-    // PERIOD
-    // =================================================
+    // -----------------------------------------------
+    // MAINTAIN 100 ms PERIOD
+    // -----------------------------------------------
 
     vTaskDelayUntil(
       &lastWakeTime,
@@ -931,53 +789,18 @@ void monitoredTask(void *parameter) {
   }
 
 
-  // Allow monitor to process final events
+  // =================================================
+  // ALLOW MONITOR TO FINISH
+  // =================================================
 
-  delay(500);
-
-
-  // ===================================================
-  // FINAL STATISTICS
-  // ===================================================
-
-  double averageExecution =
-    executionSum /
-    NUM_SAMPLES;
+  vTaskDelay(
+    pdMS_TO_TICKS(500)
+  );
 
 
-  double variance =
-    (
-      executionSumSquared /
-      NUM_SAMPLES
-    ) -
-    (
-      averageExecution *
-      averageExecution
-    );
-
-
-  if (
-    variance < 0
-  ) {
-
-    variance = 0;
-  }
-
-
-  double standardDeviation =
-    sqrt(variance);
-
-
-  // ===================================================
-  // MONITORED DATA
-  // ===================================================
-
-  unsigned long minMonitoredUs =
-    ULONG_MAX;
-
-  unsigned long maxMonitoredUs =
-    0;
-
+  // =================================================
+  // CALCULATE MONITORED STATISTICS
+  // =================================================
 
   for (
     int i = 0;
@@ -985,88 +808,122 @@ void monitoredTask(void *parameter) {
     i++
   ) {
 
-    double workloadMs =
-      records[i]
-        .workloadTimeUs /
-      1000.0;
+    unsigned long workload =
+      records[i].workloadTimeUs;
 
 
-    double monitoredMs =
-      records[i]
-        .monitoredTimeUs /
-      1000.0;
+    unsigned long monitored =
+      records[i].monitoredTimeUs;
 
 
-    double overheadMs =
-      monitoredMs -
-      workloadMs;
+    unsigned long overhead =
+      0;
 
 
     if (
-      overheadMs < 0
+      monitored >
+      workload
     ) {
 
-      overheadMs = 0;
+      overhead =
+        monitored -
+        workload;
     }
 
 
     records[i]
-      .overheadUs =
-      overheadMs *
-      1000.0;
+      .monitoringOverheadUs =
+      overhead;
 
 
-    monitoredSum +=
-      monitoredMs;
+    sumMonitoredTime +=
+      monitored;
 
 
-    monitoredSumSquared +=
-      monitoredMs *
-      monitoredMs;
+    sumMonitoredTimeSquared +=
+      (double)monitored *
+      monitored;
 
 
-    overheadSum +=
-      overheadMs;
+    sumMonitoringOverhead +=
+      overhead;
 
 
     if (
-      records[i]
-        .monitoredTimeUs <
-      minMonitoredUs
+      monitored <
+      minMonitoredTime
     ) {
 
-      minMonitoredUs =
-        records[i]
-          .monitoredTimeUs;
+      minMonitoredTime =
+        monitored;
     }
 
 
     if (
-      records[i]
-        .monitoredTimeUs >
-      maxMonitoredUs
+      monitored >
+      maxMonitoredTime
     ) {
 
-      maxMonitoredUs =
-        records[i]
-          .monitoredTimeUs;
+      maxMonitoredTime =
+        monitored;
     }
   }
 
 
-  double averageMonitored =
-    monitoredSum /
+  // =================================================
+  // WORKLOAD STATISTICS
+  // =================================================
+
+  double averageWorkloadTime =
+    sumWorkloadTime /
+    NUM_SAMPLES;
+
+
+  double workloadVariance =
+    (
+      sumWorkloadTimeSquared /
+      NUM_SAMPLES
+    )
+    -
+    (
+      averageWorkloadTime *
+      averageWorkloadTime
+    );
+
+
+  if (
+    workloadVariance < 0
+  ) {
+
+    workloadVariance =
+      0;
+  }
+
+
+  double workloadStandardDeviation =
+    sqrt(
+      workloadVariance
+    );
+
+
+  // =================================================
+  // MONITORED STATISTICS
+  // =================================================
+
+  double averageMonitoredTime =
+    sumMonitoredTime /
     NUM_SAMPLES;
 
 
   double monitoredVariance =
     (
-      monitoredSumSquared /
+      sumMonitoredTimeSquared /
       NUM_SAMPLES
-    ) -
+    )
+    -
     (
-      averageMonitored *
-      averageMonitored
+      averageMonitoredTime *
+      averageMonitoredTime
     );
 
 
@@ -1074,60 +931,60 @@ void monitoredTask(void *parameter) {
     monitoredVariance < 0
   ) {
 
-    monitoredVariance = 0;
+    monitoredVariance =
+      0;
   }
 
 
-  double monitoredStdDev =
+  double monitoredStandardDeviation =
     sqrt(
       monitoredVariance
     );
 
 
-  double averageOverhead =
-    overheadSum /
+  // =================================================
+  // MONITORING OVERHEAD
+  // =================================================
+
+  double averageMonitoringOverhead =
+    sumMonitoringOverhead /
     NUM_SAMPLES;
 
 
   double overheadPercentage =
     (
-      averageOverhead /
-      averageExecution
-    ) *
-    100.0;
+      averageMonitoringOverhead /
+      averageWorkloadTime
+    ) * 100.0;
 
 
-  // ===================================================
+  // =================================================
   // CPU UTILIZATION
-  // ===================================================
+  // =================================================
 
-  double experimentTimeMs =
+  double experimentTimeUs =
     NUM_SAMPLES *
-    PERIOD_MS;
+    PERIOD_MS *
+    1000.0;
 
 
-  double monitorCpu =
+  double taskCpuUtilization =
+    (
+      sumWorkloadTime /
+      experimentTimeUs
+    ) * 100.0;
+
+
+  double monitorCpuUtilization =
     (
       monitorBusyTimeUs /
-      (
-        experimentTimeMs *
-        1000.0
-      )
-    ) *
-    100.0;
+      experimentTimeUs
+    ) * 100.0;
 
 
-  double workloadCpu =
-    (
-      averageExecution /
-      PERIOD_MS
-    ) *
-    100.0;
-
-
-  // ===================================================
+  // =================================================
   // MEMORY
-  // ===================================================
+  // =================================================
 
   size_t freeHeap =
     ESP.getFreeHeap();
@@ -1137,15 +994,15 @@ void monitoredTask(void *parameter) {
     ESP.getMinFreeHeap();
 
 
-  UBaseType_t stackHighWater =
+  UBaseType_t stackHighWaterMark =
     uxTaskGetStackHighWaterMark(
       NULL
     );
 
 
-  // ===================================================
-  // SUMMARY
-  // ===================================================
+  // =================================================
+  // RAW DATA
+  // =================================================
 
   Serial.println();
 
@@ -1154,15 +1011,96 @@ void monitoredTask(void *parameter) {
   );
 
   Serial.println(
-    "PROJECT 1 - PART 3"
+    "RAW ADAPTIVE RUNTIME MONITOR DATA"
   );
 
   Serial.println(
-    "P3-E2 - UNIVERSAL ADAPTIVE MONITOR"
+    "========================================"
+  );
+
+
+  Serial.println(
+    "Sample,Workload_ms,Monitored_ms,Overhead_ms,Mode,DeadlineMiss"
+  );
+
+
+  for (
+    int i = 0;
+    i < NUM_SAMPLES;
+    i++
+  ) {
+
+    Serial.print(
+      i + 1
+    );
+
+    Serial.print(",");
+
+
+    Serial.print(
+      records[i].workloadTimeUs /
+      1000.0,
+      3
+    );
+
+    Serial.print(",");
+
+
+    Serial.print(
+      records[i].monitoredTimeUs /
+      1000.0,
+      3
+    );
+
+    Serial.print(",");
+
+
+    Serial.print(
+      records[i].monitoringOverheadUs /
+      1000.0,
+      3
+    );
+
+    Serial.print(",");
+
+
+    Serial.print(
+      modeName(
+        records[i].mode
+      )
+    );
+
+    Serial.print(",");
+
+
+    Serial.println(
+      records[i].deadlineMiss
+      ? 1
+      : 0
+    );
+  }
+
+
+  // =================================================
+  // FINAL SUMMARY
+  // =================================================
+
+  Serial.println();
+
+  Serial.println(
+    "========================================"
   );
 
   Serial.println(
-    "HEAVY WORKLOAD"
+    "PROJECT 1 - PART 2"
+  );
+
+  Serial.println(
+    "EXPERIMENT 2 - HEAVY WORKLOAD"
+  );
+
+  Serial.println(
+    "ADAPTIVE RUNTIME MONITOR"
   );
 
   Serial.println(
@@ -1180,11 +1118,11 @@ void monitoredTask(void *parameter) {
 
 
   Serial.print(
-    "Workload iterations: "
+    "Heavy workload iterations: "
   );
 
   Serial.println(
-    WORKLOAD_ITERATIONS
+    HEAVY_ITERATIONS
   );
 
 
@@ -1214,19 +1152,85 @@ void monitoredTask(void *parameter) {
   );
 
 
-  // ===================================================
-  // WORKLOAD TIMING
-  // ===================================================
+  // =================================================
+  // ADAPTIVE CONFIGURATION
+  // =================================================
 
   Serial.println();
 
+  Serial.print(
+    "Adaptation interval: "
+  );
+
+  Serial.print(
+    ADAPTATION_INTERVAL
+  );
+
+  Serial.println(
+    " samples"
+  );
+
+
+  Serial.print(
+    "Hysteresis cycles: "
+  );
+
+  Serial.println(
+    HYSTERESIS_CYCLES
+  );
+
+
+  Serial.print(
+    "FULL threshold: < "
+  );
+
+  Serial.print(
+    FULL_LIMIT_US / 1000
+  );
+
+  Serial.println(
+    " ms"
+  );
+
+
+  Serial.print(
+    "BALANCED threshold: < "
+  );
+
+  Serial.print(
+    BALANCED_LIMIT_US / 1000
+  );
+
+  Serial.println(
+    " ms"
+  );
+
+
+  Serial.print(
+    "LIGHT threshold: <= "
+  );
+
+  Serial.print(
+    LIGHT_LIMIT_US / 1000
+  );
+
+  Serial.println(
+    " ms"
+  );
+
+
+  // =================================================
+  // WORKLOAD TIMING
+  // =================================================
+
+  Serial.println();
 
   Serial.print(
     "Minimum workload execution time: "
   );
 
   Serial.print(
-    minExecutionTime / 1000.0,
+    minWorkloadTime / 1000.0,
     3
   );
 
@@ -1240,7 +1244,7 @@ void monitoredTask(void *parameter) {
   );
 
   Serial.print(
-    maxExecutionTime / 1000.0,
+    maxWorkloadTime / 1000.0,
     3
   );
 
@@ -1254,7 +1258,7 @@ void monitoredTask(void *parameter) {
   );
 
   Serial.print(
-    averageExecution,
+    averageWorkloadTime / 1000.0,
     3
   );
 
@@ -1268,7 +1272,7 @@ void monitoredTask(void *parameter) {
   );
 
   Serial.print(
-    standardDeviation,
+    workloadStandardDeviation / 1000.0,
     3
   );
 
@@ -1277,19 +1281,18 @@ void monitoredTask(void *parameter) {
   );
 
 
-  // ===================================================
+  // =================================================
   // MONITORED TIMING
-  // ===================================================
+  // =================================================
 
   Serial.println();
-
 
   Serial.print(
     "Minimum monitored execution time: "
   );
 
   Serial.print(
-    minMonitoredUs / 1000.0,
+    minMonitoredTime / 1000.0,
     3
   );
 
@@ -1303,7 +1306,7 @@ void monitoredTask(void *parameter) {
   );
 
   Serial.print(
-    maxMonitoredUs / 1000.0,
+    maxMonitoredTime / 1000.0,
     3
   );
 
@@ -1317,7 +1320,7 @@ void monitoredTask(void *parameter) {
   );
 
   Serial.print(
-    averageMonitored,
+    averageMonitoredTime / 1000.0,
     3
   );
 
@@ -1331,7 +1334,7 @@ void monitoredTask(void *parameter) {
   );
 
   Serial.print(
-    monitoredStdDev,
+    monitoredStandardDeviation / 1000.0,
     3
   );
 
@@ -1340,12 +1343,11 @@ void monitoredTask(void *parameter) {
   );
 
 
-  // ===================================================
-  // ADAPTIVE MODES
-  // ===================================================
+  // =================================================
+  // MODE DISTRIBUTION
+  // =================================================
 
   Serial.println();
-
 
   Serial.print(
     "FULL-mode monitored samples: "
@@ -1384,15 +1386,6 @@ void monitoredTask(void *parameter) {
 
 
   Serial.print(
-    "CRITICAL detailed samples: "
-  );
-
-  Serial.println(
-    criticalDetailedSamples
-  );
-
-
-  Serial.print(
     "Mode changes: "
   );
 
@@ -1401,96 +1394,29 @@ void monitoredTask(void *parameter) {
   );
 
 
-  // ===================================================
+  // =================================================
   // COVERAGE
-  // ===================================================
+  // =================================================
 
   Serial.println();
-
 
   Serial.println(
     "Monitoring coverage: 100.00 %"
   );
 
 
-  Serial.print(
-    "Monitor events processed: "
-  );
-
-  Serial.println(
-    monitorEventsProcessed
-  );
-
-
-  Serial.print(
-    "Detailed monitoring calculations: "
-  );
-
-  Serial.println(
-    detailedCalculations
-  );
-
-
-  // ===================================================
-  // DEADLINE
-  // ===================================================
-
-  Serial.println();
-
-
-  Serial.print(
-    "Detected deadline anomalies: "
-  );
-
-  Serial.println(
-    deadlineAnomalies
-  );
-
-
-  Serial.print(
-    "Deadline misses: "
-  );
-
-  Serial.println(
-    deadlineAnomalies
-  );
-
-
-  double detectionRate =
-    (
-      (double)deadlineAnomalies /
-      NUM_SAMPLES
-    ) *
-    100.0;
-
-
-  Serial.print(
-    "Deadline anomaly rate: "
-  );
-
-  Serial.print(
-    detectionRate,
-    2
-  );
-
-  Serial.println(
-    " %"
-  );
-
-
-  // ===================================================
+  // =================================================
   // OVERHEAD
-  // ===================================================
+  // =================================================
 
   Serial.println();
-
 
   Serial.print(
     "Average monitoring overhead: "
   );
 
   Serial.print(
-    averageOverhead,
+    averageMonitoringOverhead / 1000.0,
     3
   );
 
@@ -1513,19 +1439,59 @@ void monitoredTask(void *parameter) {
   );
 
 
-  // ===================================================
-  // CPU
-  // ===================================================
+  // =================================================
+  // DEADLINE DETECTION
+  // =================================================
 
   Serial.println();
 
+  Serial.print(
+    "Detected deadline anomalies: "
+  );
+
+  Serial.println(
+    anomaliesDetected
+  );
+
+
+  Serial.print(
+    "Deadline misses: "
+  );
+
+  Serial.println(
+    deadlineMisses
+  );
+
+
+  Serial.print(
+    "Deadline anomaly rate: "
+  );
+
+  Serial.print(
+    (
+      (double)anomaliesDetected /
+      NUM_SAMPLES
+    ) * 100.0,
+    2
+  );
+
+  Serial.println(
+    " %"
+  );
+
+
+  // =================================================
+  // CPU
+  // =================================================
+
+  Serial.println();
 
   Serial.print(
     "Monitored task CPU utilization: "
   );
 
   Serial.print(
-    workloadCpu,
+    taskCpuUtilization,
     2
   );
 
@@ -1539,7 +1505,7 @@ void monitoredTask(void *parameter) {
   );
 
   Serial.print(
-    monitorCpu,
+    monitorCpuUtilization,
     3
   );
 
@@ -1548,12 +1514,20 @@ void monitoredTask(void *parameter) {
   );
 
 
-  // ===================================================
+  Serial.print(
+    "Monitor events processed: "
+  );
+
+  Serial.println(
+    monitorEventsProcessed
+  );
+
+
+  // =================================================
   // MEMORY
-  // ===================================================
+  // =================================================
 
   Serial.println();
-
 
   Serial.print(
     "Free heap: "
@@ -1582,11 +1556,11 @@ void monitoredTask(void *parameter) {
 
 
   Serial.print(
-    "Monitor task stack high-water mark: "
+    "Monitored task stack high-water mark: "
   );
 
   Serial.print(
-    stackHighWater
+    stackHighWaterMark
   );
 
   Serial.println(
@@ -1594,18 +1568,10 @@ void monitoredTask(void *parameter) {
   );
 
 
-  // ===================================================
-  // END
-  // ===================================================
-
   Serial.println();
 
   Serial.println(
-    "========================================"
-  );
-
-  Serial.println(
-    "P3-E2 SUMMARY COMPLETE"
+    "Part 2 Experiment 2 complete."
   );
 
   Serial.println(
@@ -1613,115 +1579,9 @@ void monitoredTask(void *parameter) {
   );
 
 
-  // ===================================================
-  // RAW CSV DATA
-  // ===================================================
-
-  Serial.println();
-
-  Serial.println(
-    "========== RAW SAMPLE DATA =========="
+  vTaskDelete(
+    NULL
   );
-
-
-  Serial.println(
-    "Sample,Workload_ms,Monitored_ms,Overhead_ms,Mode,DeadlineMiss,Variance,Trend,CriticalDetailed"
-  );
-
-
-  for (
-    int i = 0;
-    i < NUM_SAMPLES;
-    i++
-  ) {
-
-    Serial.print(
-      i + 1
-    );
-
-    Serial.print(",");
-
-
-    Serial.print(
-      records[i]
-        .workloadTimeUs /
-      1000.0,
-      3
-    );
-
-    Serial.print(",");
-
-
-    Serial.print(
-      records[i]
-        .monitoredTimeUs /
-      1000.0,
-      3
-    );
-
-    Serial.print(",");
-
-
-    Serial.print(
-      records[i]
-        .overheadUs /
-      1000.0,
-      3
-    );
-
-    Serial.print(",");
-
-
-    Serial.print(
-      modeName(
-        records[i].mode
-      )
-    );
-
-    Serial.print(",");
-
-
-    Serial.print(
-      records[i].deadlineMiss
-      ? 1
-      : 0
-    );
-
-    Serial.print(",");
-
-
-    Serial.print(
-      records[i].varianceCalculated
-      ? 1
-      : 0
-    );
-
-    Serial.print(",");
-
-
-    Serial.print(
-      records[i].trendCalculated
-      ? 1
-      : 0
-    );
-
-    Serial.print(",");
-
-
-    Serial.println(
-      records[i].criticalDetailedCheck
-      ? 1
-      : 0
-    );
-  }
-
-
-  Serial.println(
-    "========== END RAW DATA =========="
-  );
-
-
-  vTaskDelete(NULL);
 }
 
 
@@ -1748,9 +1608,9 @@ void setup() {
   );
 
 
-  // ===================================================
-  // CREATE QUEUE
-  // ===================================================
+  // =================================================
+  // CREATE MONITOR QUEUE
+  // =================================================
 
   monitorQueue =
     xQueueCreate(
@@ -1775,16 +1635,15 @@ void setup() {
   }
 
 
-  // ===================================================
-  // RUNTIME MONITOR
-  // CORE 1
-  // ===================================================
+  // =================================================
+  // RUNTIME MONITOR -> CORE 1
+  // =================================================
 
   xTaskCreatePinnedToCore(
 
     runtimeMonitorTask,
 
-    "AdaptiveMonitor",
+    "RuntimeMonitor",
 
     4096,
 
@@ -1798,16 +1657,15 @@ void setup() {
   );
 
 
-  // ===================================================
-  // MONITORED WORKLOAD
-  // CORE 0
-  // ===================================================
+  // =================================================
+  // MONITORED TASK -> CORE 0
+  // =================================================
 
   xTaskCreatePinnedToCore(
 
     monitoredTask,
 
-    "MonitoredWorkload",
+    "MonitoredTask",
 
     4096,
 
@@ -1829,3 +1687,4 @@ void setup() {
 void loop() {
 
 }
+
