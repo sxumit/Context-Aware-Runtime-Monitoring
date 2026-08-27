@@ -1,5 +1,4 @@
-PROJECT 1 - PART 3
-EXPERIMENT 1 - ADAPTIVE HEAVY WORKLOAD
+CPU usage vs Detection Accuracy  trade off experiment
 ========================================
 Samples: 1000
 Workload iterations: 10000
@@ -37,9 +36,6 @@ Monitor events processed: 222
 Free heap: 301348 bytes
 Minimum free heap: 279292 bytes
 Monitor task stack high-water mark: 3404 words
-
-P3-E1 Adaptive Heavy Workload complete.
-
 
 ========================================
 RAW ADAPTIVE MONITOR DATA
