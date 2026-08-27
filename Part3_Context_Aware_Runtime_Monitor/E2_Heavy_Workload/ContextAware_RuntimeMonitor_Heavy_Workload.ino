@@ -965,7 +965,7 @@ void monitoredTask(
   );
 
   Serial.println(
-    "PROJECT 1 - PART 2"
+    "PROJECT 1 - PART 3"
   );
 
   Serial.println(
@@ -1425,7 +1425,7 @@ void monitoredTask(
   Serial.println();
 
   Serial.println(
-    "Part 2 Experiment 2 complete."
+    "Part 3 Experiment 2 complete."
   );
 
   Serial.println(
