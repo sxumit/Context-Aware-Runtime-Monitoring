@@ -142,8 +142,6 @@ void baselineTask(void *parameter) {
      experimentTime) *
     100.0;
 
-
-  // =================================================
   // MEMORY
   size_t freeHeap =
     ESP.getFreeHeap();
@@ -155,13 +153,10 @@ void baselineTask(void *parameter) {
     uxTaskGetStackHighWaterMark(NULL);
 
 
-  // =================================================
   // RAW DATA
   Serial.println();
   Serial.println("========================================");
   Serial.println("RAW EXECUTION-TIME DATA");
-  Serial.println("========================================");
-
   Serial.println("Run,Execution_Time_us");
 
   for (int i = 0; i < NUM_SAMPLES; i++) {
@@ -173,18 +168,15 @@ void baselineTask(void *parameter) {
   }
 
 
-  // =================================================
   // FINAL SUMMARY
   Serial.println();
   Serial.println("========================================");
   Serial.println("PROJECT 1 - PART 1 BASELINE");
   Serial.println("EXPERIMENT 2 - HEAVY WORKLOAD");
-  Serial.println("========================================");
-
   Serial.print("Samples: ");
   Serial.println(NUM_SAMPLES);
 
-  Serial.print("Normal iterations: ");
+  Serial.print("Heavy iterations: ");
   Serial.println(HEAVY_ITERATIONS);
 
   Serial.print("Period: ");
@@ -260,7 +252,7 @@ void baselineTask(void *parameter) {
     "Baseline Experiment 2 complete."
   );
 
-  Serial.println("========================================");
+  Serial.println("---------");
 
 
   // Stop task
