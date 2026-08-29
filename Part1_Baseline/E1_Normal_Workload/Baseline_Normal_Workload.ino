@@ -36,20 +36,13 @@ void baselineTask(void *parameter) {
 
   for (int sample = 0; sample < NUM_SAMPLES; sample++) {
 
-    // -------------------------------
     // START TIME
-    // -------------------------------
-
     unsigned long long startTime =
       esp_timer_get_time();
 
     digitalWrite(LED_PIN, HIGH);
 
-
-    // -------------------------------
     // NORMAL CPU WORKLOAD
-    // -------------------------------
-
     float x = 0.5;
 
     for (int i = 0; i < NORMAL_ITERATIONS; i++) {
@@ -61,10 +54,7 @@ void baselineTask(void *parameter) {
     calculationResult = x;
 
 
-    // -------------------------------
     // FINISH TIME
-    // -------------------------------
-
     unsigned long long finishTime =
       esp_timer_get_time();
 
@@ -75,19 +65,11 @@ void baselineTask(void *parameter) {
     unsigned long executionTime =
       finishTime - startTime;
 
-
-    // -------------------------------
     // STORE RAW MEASUREMENT
-    // -------------------------------
-
     executionTimes[sample] =
       executionTime;
 
-
-    // -------------------------------
     // STATISTICS
-    // -------------------------------
-
     totalExecutionTime += executionTime;
     totalBusyTime += executionTime;
 
@@ -108,11 +90,7 @@ void baselineTask(void *parameter) {
       (double)executionTime *
       executionTime;
 
-
-    // -------------------------------
     // DEADLINE CHECK
-    // -------------------------------
-
     if (executionTime >
         (DEADLINE_MS * 1000ULL)) {
 
@@ -120,22 +98,14 @@ void baselineTask(void *parameter) {
 
     }
 
-
-    // -------------------------------
     // MAINTAIN PERIOD
-    // -------------------------------
-
     vTaskDelayUntil(
       &lastWakeTime,
       pdMS_TO_TICKS(PERIOD_MS)
     );
   }
 
-
-  // =================================================
   // FINAL STATISTICS
-  // =================================================
-
   double averageExecutionTime =
     sumExecutionTime / NUM_SAMPLES;
 
@@ -163,11 +133,7 @@ void baselineTask(void *parameter) {
      experimentTime) *
     100.0;
 
-
-  // =================================================
   // MEMORY
-  // =================================================
-
   size_t freeHeap =
     ESP.getFreeHeap();
 
@@ -177,11 +143,7 @@ void baselineTask(void *parameter) {
   UBaseType_t stackHighWaterMark =
     uxTaskGetStackHighWaterMark(NULL);
 
-
-  // =================================================
   // RAW DATA
-  // =================================================
-
   Serial.println();
   Serial.println("========================================");
   Serial.println("RAW EXECUTION-TIME DATA");
@@ -197,11 +159,7 @@ void baselineTask(void *parameter) {
 
   }
 
-
-  // =================================================
   // FINAL SUMMARY
-  // =================================================
-
   Serial.println();
   Serial.println("========================================");
   Serial.println("PROJECT 1 - PART 1 BASELINE");
