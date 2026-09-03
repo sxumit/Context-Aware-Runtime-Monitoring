@@ -2,11 +2,10 @@
 #include <math.h>
 #include "esp_timer.h"
 
-// =====================================================
-// PROJECT 1 - PART 3
-// EXPERIMENT 1 - ADAPTIVE RUNTIME MONITOR
-// HEAVY WORKLOAD
-// =====================================================
+// Adaptive runtime monitor challenge test case .
+// CPU detection accuracy dropped by 89%
+// the workload was heavy
+// gp through the results file to better understand the experiment
 
 #define LED_PIN 4
 
@@ -22,9 +21,7 @@
 #define TASK_FINISH_EVENT 2
 
 
-// =====================================================
 // ADAPTIVE MONITOR PARAMETERS
-// =====================================================
 
 // Number of consecutive sampled deadline violations
 // required before reducing monitoring intensity.
@@ -37,9 +34,7 @@
 #define RECOVERY_THRESHOLD 10
 
 
-// =====================================================
 // MONITORING MODES
-// =====================================================
 
 enum MonitorMode {
 
@@ -50,9 +45,7 @@ enum MonitorMode {
 };
 
 
-// =====================================================
 // SAMPLING INTERVAL
-// =====================================================
 
 int getSamplingInterval(
   MonitorMode mode
@@ -77,9 +70,7 @@ int getSamplingInterval(
 }
 
 
-// =====================================================
 // EVENT
-// =====================================================
 
 struct MonitorEvent {
 
@@ -91,9 +82,7 @@ struct MonitorEvent {
 };
 
 
-// =====================================================
 // SAMPLE RECORD
-// =====================================================
 
 struct SampleRecord {
 
@@ -114,16 +103,12 @@ struct SampleRecord {
 SampleRecord records[NUM_SAMPLES];
 
 
-// =====================================================
 // QUEUE
-// =====================================================
 
 QueueHandle_t monitorQueue;
 
 
-// =====================================================
 // MONITOR STATE
-// =====================================================
 
 MonitorMode currentMode = FULL_MODE;
 
@@ -134,18 +119,14 @@ uint16_t currentSample = 0;
 bool taskRunning = false;
 
 
-// =====================================================
 // ADAPTATION STATE
-// =====================================================
 
 int pressureCount = 0;
 
 int recoveryCount = 0;
 
 
-// =====================================================
 // STATISTICS
-// =====================================================
 
 unsigned long sampledExecutions = 0;
 
@@ -172,19 +153,14 @@ double sumMonitoredTimeSquared = 0;
 double sumMonitoringOverhead = 0;
 
 
-// =====================================================
 // MONITOR CPU
-// =====================================================
-
 unsigned long long monitorBusyTimeUs = 0;
 
 unsigned long monitorEventsProcessed = 0;
 
 
-// =====================================================
 // RUNTIME MONITOR
 // CORE 1
-// =====================================================
 
 void runtimeMonitorTask(void *parameter) {
 
@@ -205,9 +181,7 @@ void runtimeMonitorTask(void *parameter) {
         esp_timer_get_time();
 
 
-      // =============================================
       // START EVENT
-      // =============================================
 
       if (
         event.eventType ==
@@ -224,10 +198,7 @@ void runtimeMonitorTask(void *parameter) {
       }
 
 
-      // =============================================
       // FINISH EVENT
-      // =============================================
-
       else if (
         event.eventType ==
         TASK_FINISH_EVENT
@@ -262,9 +233,7 @@ void runtimeMonitorTask(void *parameter) {
           .mode = currentMode;
 
 
-        // =========================================
         // DEADLINE CHECK
-        // =========================================
 
         bool deadlineMiss =
           workloadTimeUs >
@@ -293,17 +262,13 @@ void runtimeMonitorTask(void *parameter) {
         }
 
 
-        // =========================================
         // ADAPTIVE MODE SELECTION
-        // =========================================
 
         MonitorMode previousMode =
           currentMode;
 
 
-        // -----------------------------------------
         // PRESSURE INCREASE
-        // -----------------------------------------
 
         if (
           pressureCount >=
@@ -342,9 +307,7 @@ void runtimeMonitorTask(void *parameter) {
         }
 
 
-        // -----------------------------------------
         // RECOVERY
-        // -----------------------------------------
 
         if (
           recoveryCount >=
@@ -392,9 +355,7 @@ void runtimeMonitorTask(void *parameter) {
         }
 
 
-        // =========================================
         // WORKLOAD STATISTICS
-        // =========================================
 
         if (
           workloadTimeUs <
@@ -441,10 +402,9 @@ void runtimeMonitorTask(void *parameter) {
 }
 
 
-// =====================================================
 // MONITORED HEAVY WORKLOAD
 // CORE 0
-// =====================================================
+
 
 void monitoredTask(void *parameter) {
 
@@ -458,10 +418,10 @@ void monitoredTask(void *parameter) {
   );
 
 
-  // ================================================
-  // EXPERIMENT
-  // ================================================
 
+    // EXPERIMENT
+
+  
   for (
     int sample = 0;
     sample < NUM_SAMPLES;
@@ -488,17 +448,14 @@ void monitoredTask(void *parameter) {
       currentMode;
 
 
-    // =============================================
-    // TOTAL MONITORED INTERVAL
-    // =============================================
+
+        // TOTAL MONITORED INTERVAL
 
     unsigned long long totalStart =
       esp_timer_get_time();
 
 
-    // =============================================
     // SEND START ONLY WHEN THIS EXECUTION IS SAMPLED
-    // =============================================
 
     if (shouldMonitor) {
 
@@ -522,9 +479,7 @@ void monitoredTask(void *parameter) {
     }
 
 
-    // =============================================
     // HEAVY WORKLOAD
-    // =============================================
 
     digitalWrite(
       LED_PIN,
@@ -554,9 +509,7 @@ void monitoredTask(void *parameter) {
     );
 
 
-    // =============================================
     // SEND FINISH EVENT
-    // =============================================
 
     if (shouldMonitor) {
 
@@ -580,9 +533,7 @@ void monitoredTask(void *parameter) {
     }
 
 
-    // =============================================
     // TOTAL MONITORED TIME
-    // =============================================
 
     unsigned long long totalFinish =
       esp_timer_get_time();
@@ -599,9 +550,7 @@ void monitoredTask(void *parameter) {
       shouldMonitor;
 
 
-    // =============================================
     // COUNT COVERAGE
-    // =============================================
 
     if (shouldMonitor) {
 
@@ -626,9 +575,7 @@ void monitoredTask(void *parameter) {
     }
 
 
-    // =============================================
     // PERIOD
-    // =============================================
 
     vTaskDelayUntil(
       &lastWakeTime,
@@ -644,9 +591,7 @@ void monitoredTask(void *parameter) {
   );
 
 
-  // ================================================
   // CALCULATE STATISTICS ONLY FOR SAMPLED EXECUTIONS
-  // ================================================
 
   for (
     int i = 0;
@@ -700,9 +645,7 @@ void monitoredTask(void *parameter) {
   }
 
 
-  // ================================================
   // AVERAGES
-  // ================================================
 
   double averageWorkloadTime =
     sumWorkloadTime /
@@ -756,9 +699,7 @@ void monitoredTask(void *parameter) {
     sqrt(monitoredVariance);
 
 
-  // ================================================
   // MONITORING OVERHEAD
-  // ================================================
 
   double averageMonitoringOverhead =
     sumMonitoringOverhead /
@@ -772,9 +713,7 @@ void monitoredTask(void *parameter) {
     ) * 100.0;
 
 
-  // ================================================
   // COVERAGE
-  // ================================================
 
   double monitoringCoverage =
     (
@@ -783,9 +722,7 @@ void monitoredTask(void *parameter) {
     ) * 100.0;
 
 
-  // ================================================
   // CPU UTILIZATION
-  // ================================================
 
   double experimentTimeUs =
     NUM_SAMPLES *
@@ -808,9 +745,7 @@ void monitoredTask(void *parameter) {
     ) * 100.0;
 
 
-  // ================================================
   // MEMORY
-  // ================================================
 
   size_t freeHeap =
     ESP.getFreeHeap();
@@ -826,9 +761,7 @@ void monitoredTask(void *parameter) {
     );
 
 
-  // ================================================
   // RAW DATA
-  // ================================================
 
   Serial.println();
 
@@ -939,9 +872,7 @@ void monitoredTask(void *parameter) {
   }
 
 
-  // ================================================
   // FINAL SUMMARY
-  // ================================================
 
   Serial.println();
 
@@ -1006,9 +937,7 @@ void monitoredTask(void *parameter) {
   );
 
 
-  // ================================================
   // ADAPTIVE PARAMETERS
-  // ================================================
 
   Serial.println();
 
@@ -1035,9 +964,7 @@ void monitoredTask(void *parameter) {
   );
 
 
-  // ================================================
   // WORKLOAD TIMING
-  // ================================================
 
   Serial.println();
 
@@ -1097,9 +1024,7 @@ void monitoredTask(void *parameter) {
   );
 
 
-  // ================================================
   // MONITORED TIMING
-  // ================================================
 
   Serial.println();
 
@@ -1147,9 +1072,7 @@ void monitoredTask(void *parameter) {
   );
 
 
-  // ================================================
   // ADAPTIVE MONITORING
-  // ================================================
 
   Serial.println();
 
@@ -1212,9 +1135,7 @@ void monitoredTask(void *parameter) {
   );
 
 
-  // ================================================
   // OVERHEAD
-  // ================================================
 
   Serial.println();
 
@@ -1246,9 +1167,7 @@ void monitoredTask(void *parameter) {
   );
 
 
-  // ================================================
   // DETECTION
-  // ================================================
 
   Serial.println();
 
@@ -1261,9 +1180,7 @@ void monitoredTask(void *parameter) {
   );
 
 
-  // ================================================
   // CPU
-  // ================================================
 
   Serial.println();
 
@@ -1290,9 +1207,7 @@ void monitoredTask(void *parameter) {
   );
 
 
-  // ================================================
   // MEMORY
-  // ================================================
 
   Serial.println();
 
@@ -1350,9 +1265,7 @@ void monitoredTask(void *parameter) {
 }
 
 
-// =====================================================
 // SETUP
-// =====================================================
 
 void setup() {
 
@@ -1373,9 +1286,7 @@ void setup() {
   );
 
 
-  // ================================================
   // CREATE QUEUE
-  // ================================================
 
   monitorQueue =
     xQueueCreate(
@@ -1398,9 +1309,7 @@ void setup() {
   }
 
 
-  // ================================================
   // RUNTIME MONITOR → CORE 1
-  // ================================================
 
   xTaskCreatePinnedToCore(
 
@@ -1420,9 +1329,7 @@ void setup() {
   );
 
 
-  // ================================================
   // MONITORED TASK → CORE 0
-  // ================================================
 
   xTaskCreatePinnedToCore(
 
